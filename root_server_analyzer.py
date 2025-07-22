@@ -57,7 +57,7 @@ app.layout = html.Div([
         id="view-mode-radio",
         options=[
             {"label": "Total per Country", "value": "total"},
-            {"label": "Per File (stacked)", "value": "detailed"}
+            {"label": "Per Letter", "value": "detailed"}
         ],
         value="total",
         labelStyle={'display': 'inline-block', 'margin-right': '20px'}
@@ -140,18 +140,10 @@ app.layout = html.Div([
     Input("limit-input", "value"),
     Input("view-mode-radio", "value")
 )
-def update_chart(selected_sources, selected_index, sort_order, selected_countries, blacklisted_countries, limit, view_mode):
+def update_chart(selected_sources, selected_index, sort_order, selected_countries, blacklisted_countries, limit,
+                 view_mode):
     selected_month = index_to_month[int(selected_index)]
 
-    # Step 1: Base filter by source and date (for country candidate list)
-    time_source_filtered = [
-        s for s in all_sites
-        if s["source"] in selected_sources
-        and s["Created_dt"].date() <= selected_month.replace(day=28)
-        and s.get("Country")
-    ]
-
-    # Step 2: Build full list of countries (pre-limit)
     if selected_countries:
         matching_countries = set(selected_countries)
     else:
@@ -159,158 +151,63 @@ def update_chart(selected_sources, selected_index, sort_order, selected_countrie
             site["Country"] for site in all_sites
             if site["source"] in selected_sources and site.get("Country")
         )
-
     if blacklisted_countries:
         matching_countries -= set(blacklisted_countries)
 
     all_matching_countries = sorted(matching_countries)
-
-    # Step 3: Filter fully by source, country, and date (for counting)
-    fully_filtered = [
+    filtered = [
         s for s in all_sites
-        if s["source"] in selected_sources
-        and s.get("Country") in matching_countries
-        and s["Created_dt"].date() <= selected_month.replace(day=28)
+        if s["source"] in selected_sources and s.get("Country") in matching_countries
+           and s["Created_dt"].date() <= selected_month.replace(day=28)
     ]
 
-    # Step 4: Count per country
-    country_counts = Counter(site["Country"] for site in fully_filtered)
-
-    # Step 5: Build DataFrame with 0-filled values
-    df = pd.DataFrame({
-        "Country": all_matching_countries,
-        "Sites": [country_counts.get(c, 0) for c in all_matching_countries]
-    })
-
-    # Step 6: Sort
-    df.sort_values(by="Sites", ascending=(sort_order == "asc"), inplace=True)
-
-    # Step 7: Apply limit
-    if limit and isinstance(limit, int) and limit > 0:
-        df = df.head(limit)
-
-    if df.empty:
-        fig = px.bar(title="No data to display with current filters")
-        fig.update_layout(
-            xaxis={'visible': False},
-            yaxis={'visible': False},
-            height=600,
-            annotations=[{
-                'text': "No data matches the current filters.",
-                'xref': "paper",
-                'yref': "paper",
-                'showarrow': False,
-                'font': {'size': 20}
-            }]
-        )
-        return fig
-
     if view_mode == "detailed":
-        # Build breakdown: Country + Source → Count
-        filtered_sites = [
-            s for s in all_sites
-            if s["source"] in selected_sources
-               and s.get("Country") in matching_countries
-               and s["Created_dt"].date() <= selected_month.replace(day=28)
-        ]
-
-        # Build a (Country, Source) count matrix
-        breakdown = {}
-        for site in filtered_sites:
-            key = (site["Country"], site["source"])
-            breakdown[key] = breakdown.get(key, 0) + 1
-
-        # Ensure every (country, source) pair appears, even if 0
+        breakdown = Counter((s["Country"], s["source"]) for s in filtered)
         rows = []
-        for country in matching_countries:
-            for source in selected_sources:
-                label = SOURCE_LABELS.get(source, source)
-                count = breakdown.get((country, source), 0)
+        for c in matching_countries:
+            for src in selected_sources:
                 rows.append({
-                    "Country": country,
-                    "Source": label,
-                    "Count": count
+                    "Country": c,
+                    "Source": SOURCE_LABELS.get(src, src),
+                    "Count": breakdown.get((c, src), 0)
                 })
-
         df = pd.DataFrame(rows)
-
-        # 🧠 Ensure all source labels appear — even with 0
-        all_sources = sorted(
-            [SOURCE_LABELS.get(src, src) for src in selected_sources]
-        )
-
+        all_sources = sorted(SOURCE_LABELS.get(src, src) for src in selected_sources)
         df["Source"] = pd.Categorical(df["Source"], categories=all_sources, ordered=True)
+        totals = df.groupby("Country")["Count"].sum().sort_values(ascending=(sort_order == "asc"))
+        if limit: df = df[df["Country"].isin(totals.head(limit).index)]
+        df["Country"] = pd.Categorical(df["Country"], categories=totals.index, ordered=True)
         df.sort_values(["Country", "Source"], inplace=True)
 
-        # Apply sorting (based on total per country)
-        country_totals = df.groupby("Country")["Count"].sum().sort_values(
-            ascending=(sort_order == "asc")
-        )
-
-        # Apply limit
-        if limit and isinstance(limit, int) and limit > 0:
-            top_countries = country_totals.head(limit).index
-            df = df[df["Country"].isin(top_countries)]
-
-        df["Country"] = pd.Categorical(df["Country"], categories=country_totals.index, ordered=True)
-        df.sort_values("Country", inplace=True)
-
         fig = px.bar(
-            df,
-            x="Country",
-            y="Count",
-            color="Source",
-            barmode="group",
-            title=f"Per-letter root server breakdown on or before {selected_month.strftime('%Y-%m')}",
-            category_orders={"Source": all_sources},
-            height=600
+            df, x="Country", y="Count", color="Source", barmode="group",
+            title=f"Per-letter root server breakdown on or before {selected_month.strftime('%m-%Y')}",
+            category_orders={"Source": all_sources}, height=600
         )
-        fig.update_yaxes(
-            showgrid=True,
-            gridcolor="lightgray",  # Color of horizontal grid lines
-            gridwidth=1,
-            range=[0, max_site_count]
-        )
-
-        fig.update_xaxes(
-            showgrid=True,
-            gridcolor="lightgray",  # Color of vertical grid lines
-            gridwidth=1,
-            ticks="outside",
-            ticklen=5,
-            tickson="boundaries"
-        )
-
-        fig.update_layout(
-            bargroupgap=0.3,
-            plot_bgcolor="white",  # Set background of plot area to white
-            paper_bgcolor="white",  # Set background of entire figure to white
-                          )
-        return fig
-
     else:
-        # Step 9: Plot with fixed Y-axis
+        counts = Counter(s["Country"] for s in filtered)
+        df = pd.DataFrame({
+            "Country": all_matching_countries,
+            "Sites": [counts.get(c, 0) for c in all_matching_countries]
+        })
+        df.sort_values("Sites", ascending=(sort_order == "asc"), inplace=True)
+        if limit: df = df.head(limit)
+
         fig = px.bar(
-            df,
-            x="Country",
-            y="Sites",
-            title=f"Root servers created on or before {selected_month.strftime('%Y-%m')}",
-            labels={"Sites": "Root Servers"},
-            height=600
-        )
-        fig.update_yaxes(
-            showgrid=True,
-            gridcolor="lightgray",  # Color of horizontal grid lines
-            gridwidth=1,
-            range=[0, max_site_count]
+            df, x="Country", y="Sites",
+            title=f"Root servers created on or before {selected_month.strftime('%m-%Y')}",
+            labels={"Sites": "Root Servers"}, height=600
         )
 
-        fig.update_layout(
-            bargroupgap=0.3,
-            plot_bgcolor="white",  # Set background of plot area to white
-            paper_bgcolor="white",  # Set background of entire figure to white
-        )
-        return fig
+    fig.update_layout(
+        bargroupgap=0.3,
+        plot_bgcolor="white",
+        paper_bgcolor="white"
+    )
+    fig.update_yaxes(showgrid=True, gridcolor="lightgray", gridwidth=1, range=[0, max_site_count])
+    fig.update_xaxes(showgrid=True, gridcolor="lightgray", gridwidth=1, ticks="outside", ticklen=5,
+                     tickson="boundaries")
+    return fig
 
 
 # --- Run Server ---
