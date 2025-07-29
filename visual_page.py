@@ -1,4 +1,5 @@
-import dash
+# File: visual_page.py
+
 from dash import dcc, html, Input, Output
 import plotly.express as px
 import os
@@ -7,10 +8,11 @@ from datetime import datetime, date
 from collections import Counter
 from dateutil.relativedelta import relativedelta
 import pandas as pd
+from server import app
 
 DATA_DIR = "data"
 
-# Load all JSON files from the data/ folder
+# --- Load root-servers.org data ---
 all_sites = []
 for filename in os.listdir(DATA_DIR):
     if filename.endswith(".json"):
@@ -27,11 +29,9 @@ SOURCE_LABELS = {
     for fname in set(site["source"] for site in all_sites)
 }
 
-# --- Extract filterable options ---
 sources = sorted(set(site["source"] for site in all_sites))
 countries = sorted(set(site["Country"] for site in all_sites if site.get("Country")))
 
-# --- Build monthly slider steps ---
 min_created = min(site["Created_dt"] for site in all_sites).date().replace(day=1)
 max_created = date.today().replace(day=1)
 
@@ -42,16 +42,11 @@ while current <= max_created:
     current += relativedelta(months=1)
 
 index_to_month = {i: m for i, m in enumerate(months)}
-
-# --- Compute max number of sites per country (global peak) ---
 overall_counts = Counter(site["Country"] for site in all_sites if site.get("Country"))
 max_site_count = max(overall_counts.values())
 
-# --- Dash App ---
-app = dash.Dash(__name__)
-app.title = "Root Server Visualization"
-
-app.layout = html.Div([
+# --- Layout ---
+visual_layout = html.Div([
     html.Label("View mode:"),
     dcc.RadioItems(
         id="view-mode-radio",
@@ -78,7 +73,7 @@ app.layout = html.Div([
     dcc.Dropdown(
         id="country-dropdown",
         options=[{"label": c, "value": c} for c in countries],
-        value=[],  # default: no selection = all
+        value=[],
         multi=True,
         placeholder="Select countries to display"
     ),
@@ -140,8 +135,7 @@ app.layout = html.Div([
     Input("limit-input", "value"),
     Input("view-mode-radio", "value")
 )
-def update_chart(selected_sources, selected_index, sort_order, selected_countries, blacklisted_countries, limit,
-                 view_mode):
+def update_chart(selected_sources, selected_index, sort_order, selected_countries, blacklisted_countries, limit, view_mode):
     selected_month = index_to_month[int(selected_index)]
 
     if selected_countries:
@@ -158,7 +152,7 @@ def update_chart(selected_sources, selected_index, sort_order, selected_countrie
     filtered = [
         s for s in all_sites
         if s["source"] in selected_sources and s.get("Country") in matching_countries
-           and s["Created_dt"].date() <= selected_month.replace(day=28)
+        and s["Created_dt"].date() <= selected_month.replace(day=28)
     ]
 
     if view_mode == "detailed":
@@ -175,7 +169,8 @@ def update_chart(selected_sources, selected_index, sort_order, selected_countrie
         all_sources = sorted(SOURCE_LABELS.get(src, src) for src in selected_sources)
         df["Source"] = pd.Categorical(df["Source"], categories=all_sources, ordered=True)
         totals = df.groupby("Country")["Count"].sum().sort_values(ascending=(sort_order == "asc"))
-        if limit: df = df[df["Country"].isin(totals.head(limit).index)]
+        if limit:
+            df = df[df["Country"].isin(totals.head(limit).index)]
         df["Country"] = pd.Categorical(df["Country"], categories=totals.index, ordered=True)
         df.sort_values(["Country", "Source"], inplace=True)
 
@@ -191,7 +186,8 @@ def update_chart(selected_sources, selected_index, sort_order, selected_countrie
             "Sites": [counts.get(c, 0) for c in all_matching_countries]
         })
         df.sort_values("Sites", ascending=(sort_order == "asc"), inplace=True)
-        if limit: df = df.head(limit)
+        if limit:
+            df = df.head(limit)
 
         fig = px.bar(
             df, x="Country", y="Sites",
@@ -205,11 +201,5 @@ def update_chart(selected_sources, selected_index, sort_order, selected_countrie
         paper_bgcolor="white"
     )
     fig.update_yaxes(showgrid=True, gridcolor="lightgray", gridwidth=1, range=[0, max_site_count])
-    fig.update_xaxes(showgrid=True, gridcolor="lightgray", gridwidth=1, ticks="outside", ticklen=5,
-                     tickson="boundaries")
+    fig.update_xaxes(showgrid=True, gridcolor="lightgray", gridwidth=1, ticks="outside", ticklen=5, tickson="boundaries")
     return fig
-
-
-# --- Run Server ---
-if __name__ == '__main__':
-    app.run(debug=False, dev_tools_ui=False)
